@@ -9,8 +9,8 @@ import bpy
 from bpy.props import BoolProperty, IntProperty
 from bpy.types import Operator, Panel, Scene
 from bpy.utils import register_class, unregister_class
-from mathutils import Matrix, Vector, Quaternion
-from math import cos, sin, acos, isclose, pi
+from mathutils import Matrix, Vector
+from math import isclose, pi
 
 bl_info = {
     "name": "3 Points ARc",
