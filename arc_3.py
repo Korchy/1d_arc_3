@@ -51,6 +51,11 @@ class Arc3:
         v0 = next((vertex for vertex in bm.verts if vertex.select), None)
         if v0:
             v1 = v0.link_edges[0].other_vert(v0) if v0.link_edges else None
+            # special case: if v0 and v1 placed on the same place (have the same coordinates)
+            if cls._is_vectors_close(v0.co, v1.co):
+                bm.verts.remove(v0)
+                v0 = v1
+                v1 = v0.link_edges[0].other_vert(v0) if v0.link_edges else None
             if v1:
                 v2_edge = next((edge for edge in v1.link_edges if edge != v0.link_edges[0]), None)
                 v2 = v2_edge.other_vert(v1) if v2_edge else None
@@ -86,33 +91,46 @@ class Arc3:
             # change rotating direction by sign
             if angle_sign < 0.0:
                 invert_direction = not invert_direction
-            # create new vertices - create in v0 and rotate it around circle center
+            # Another way to solve proper rotating direction - count for both directions, then try to compare length
+            #   of vector from v1 to center arc point and get the direction with less length
+            single_vert_co = cls._arc_vertices_co(
+                v0=v0gco,
+                v2=v2gco,
+                axis=axis,
+                circle_center=circle_center,
+                points=1,
+                obj_world_matrix_i=obj_world_matrix_i,
+                invert_direction=invert_direction
+            )
+            single_vert_co_inv_direction = cls._arc_vertices_co(
+                v0=v0gco,
+                v2=v2gco,
+                axis=axis,
+                circle_center=circle_center,
+                points=1,
+                obj_world_matrix_i=obj_world_matrix_i,
+                invert_direction=not invert_direction
+            )
+            # compare lengths
+            l1 = (v1gco - single_vert_co[0]).length
+            l2 = (v1gco - single_vert_co_inv_direction[0]).length
+            invert_direction = invert_direction if l1 < l2 else (not invert_direction)
+            # now we can create vertices on all point with more properly rotating direction
+            # create new vertices - count coordinates for all new vertices on the arc
+            new_vertices_co = cls._arc_vertices_co(
+                v0=v0gco,
+                v2=v2gco,
+                axis=axis,
+                circle_center=circle_center,
+                points=points,
+                obj_world_matrix_i=obj_world_matrix_i,
+                invert_direction=invert_direction
+            )
+            # create new vertices by given coordinates
             new_vertices = []
-            for i in range(points):
-                # count rotating factor for current creating vertex
-                f = (i + 1) / (points + 1)
-                # create new vertex in v0 in global system
-                new_vert = bm.verts.new(v0gco)
-                # save it for future creating edges
+            for vert in new_vertices_co:
+                new_vert = bm.verts.new(vert)
                 new_vertices.append(new_vert)
-                # we need to use angle v0 - v1 - v2 because we need to control direction of rotating
-                #   to make rotation through v1 but not by shortest path (as commonly matrices works)
-                v0_cc_v2_angle = (circle_center - v0gco).angle(circle_center - v2gco)
-                angle = (v0_cc_v2_angle * f) if not invert_direction else (2*pi - v0_cc_v2_angle) * f + v0_cc_v2_angle
-                # create rotation matrix for new vertex to rotate it from v0 to its place by factor
-                mat_rot = cls._rotation_matrix_from_vector_to_vector(
-                    src_vector=circle_center - v0gco,
-                    dest_vector=circle_center - v2gco,
-                    angle=angle,
-                    axis=axis
-                )
-                # rotate new vertex using counted matrices
-                #   move it to the world origin (because matrices rotates around world origin), rotate, move back
-                cc_v0_g = v0gco - circle_center
-                cc_v0_g = mat_rot * cc_v0_g
-                cc_new_vert_g = circle_center + cc_v0_g
-                cc_new_vert = obj_world_matrix_i * cc_new_vert_g
-                new_vert.co = cc_new_vert
             # create edges by new vertices
             # add v0 and v2 as first - last vertices to the new vertices list
             if invert_direction:
@@ -124,6 +142,9 @@ class Arc3:
             chunks = cls._chunks(new_vertices, n=2, offset=1)
             for chunk in (chunk for chunk in chunks if len(chunk) == 2):
                 bm.edges.new(chunk)
+
+            # remove v1 (clearing old geometry)
+            bm.verts.remove(v1)
 
             # --- debug circle ---
             # bpy.context.scene.cursor_location = circle_center
@@ -145,6 +166,44 @@ class Arc3:
         bpy.ops.object.mode_set(mode=mode)
 
     @staticmethod
+    def _is_vectors_close(v0: Vector, v1: Vector, tolerance=0.001):
+        # check if two vectors are close by tolerance
+        return True if isclose(v0.x, v1.x, rel_tol=tolerance) \
+                       and isclose(v0.y, v1.y, rel_tol=tolerance) \
+                       and isclose(v0.z, v1.z, rel_tol=tolerance) \
+            else False
+
+    @classmethod
+    def _arc_vertices_co(cls, v0, v2, axis, circle_center, points, obj_world_matrix_i, invert_direction):
+        # get coordinates of new creating vertices on the arc
+        new_vertices_co = []
+        for i in range(points):
+            # count rotating factor for current creating vertex
+            f = (i + 1) / (points + 1)
+            # create new vertex in v0 in global system
+            new_vert_co = v0
+            # we need to use angle v0 - v1 - v2 because we need to control direction of rotating
+            #   to make rotation through v1 but not by shortest path (as commonly matrices works)
+            v0_cc_v2_angle = (circle_center - v0).angle(circle_center - v2)
+            angle = (v0_cc_v2_angle * f) if not invert_direction else (2 * pi - v0_cc_v2_angle) * f + v0_cc_v2_angle
+            # create rotation matrix for new vertex to rotate it from v0 to its place by factor
+            mat_rot = cls._rotation_matrix_from_vector_to_vector(
+                src_vector=circle_center - v0,
+                dest_vector=circle_center - v2,
+                angle=angle,
+                axis=axis
+            )
+            # rotate new vertex using counted matrices
+            #   move it to the world origin (because matrices rotates around world origin), rotate, move back
+            cc_v0_g = v0 - circle_center
+            cc_v0_g = mat_rot * cc_v0_g
+            cc_new_vert_g = circle_center + cc_v0_g
+            new_vert_co = obj_world_matrix_i * cc_new_vert_g
+            # save it in list
+            new_vertices_co.append(new_vert_co)
+        return new_vertices_co
+
+    @staticmethod
     def _chunks(lst, n, offset=0):
         for i in range(0, len(lst), n - offset):
             yield lst[i:i + n]
@@ -162,10 +221,12 @@ class Arc3:
         #   return circle center coordinates and radius length
         vv1 = v1 - v0
         vv2 = v2 - v0
-        v1v1 = vv1.dot(vv1)
-        v2v2 = vv2.dot(vv2)
-        v1v2 = vv1.dot(vv2)
-        base = (0.5 / (v1v1 * v2v2 - v1v2 * v1v2)) if ((v1v1 * v2v2 - v1v2 * v1v2) > 0.001) else 0
+        def _dot(_v1, _v2):
+            return _v1.x * _v2.x + _v1.y * _v2.y + _v1.z * _v2.z
+        v1v1 = _dot(vv1, vv1)
+        v2v2 = _dot(vv2, vv2)
+        v1v2 = _dot(vv1, vv2)
+        base = 0.5 / (v1v1 * v2v2 - v1v2 * v1v2)
         k1 = base * v2v2 * (v1v1 - v1v2)
         k2 = base * v1v1 * (v2v2 - v1v2)
         center = v0 + vv1 * k1 + vv2 * k2
@@ -227,10 +288,10 @@ class Arc3:
             data=context.scene,
             property='arc3_prop_points'
         )
-        layout.prop(
-            data=context.scene,
-            property='arc3_prop_invert_direction'
-        )
+        # layout.prop(
+        #     data=context.scene,
+        #     property='arc3_prop_invert_direction'
+        # )
 
 
 # OPERATORS
