@@ -126,7 +126,7 @@ class Arc3:
                 obj_world_matrix_i=obj_world_matrix_i,
                 invert_direction=invert_direction
             )
-            # create new vertices by given coordinates
+            # create new vertices by given list of coordinates
             new_vertices = []
             for vert in new_vertices_co:
                 new_vert = bm.verts.new(vert)
