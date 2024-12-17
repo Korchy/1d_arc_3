@@ -6,17 +6,17 @@
 
 import bmesh
 import bpy
-from bpy.props import BoolProperty, IntProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty
 from bpy.types import Operator, Panel, Scene
 from bpy.utils import register_class, unregister_class
 from mathutils import Matrix, Vector
 from math import isclose, pi
 
 bl_info = {
-    "name": "3 Points ARc",
+    "name": "3 Points Arc",
     "description": "Creates arc from 2 edges (3 starting points).",
     "author": "Nikita Akimov, Paul Kotelevets",
-    "version": (1, 0, 0),
+    "version": (1, 1, 0),
     "blender": (2, 79, 0),
     "location": "View3D > Tool panel > 1D > 3 Points Arc",
     "doc_url": "https://github.com/Korchy/1d_arc_3",
@@ -30,7 +30,7 @@ bl_info = {
 class Arc3:
 
     @classmethod
-    def arc3(cls, context, obj, points=5, invert_direction=False):
+    def arc3(cls, context, obj, points=5, edge_length=1.25, arc_mode='POINTS', invert_direction=False):
         # create arc from 2 edges (3 vertices)
         obj = obj if obj else context.active_object
         # current mode
@@ -38,33 +38,81 @@ class Arc3:
         if obj.mode == 'EDIT':
             bpy.ops.object.mode_set(mode='OBJECT')
         # switch to vertex selection mode
-        # context.tool_settings.mesh_select_mode = (True, False, False)
         obj_world_matrix = obj.matrix_world.copy()
-        obj_world_matrix_i = obj.matrix_world.copy()
-        obj_world_matrix_i.invert()
         bm = bmesh.new()
         bm.from_mesh(obj.data)
         bm.verts.ensure_lookup_table()
         bm.edges.ensure_lookup_table()
-        # get 3 starting vertices
-        v0 = v1 = v2 = None
-        v0 = next((vertex for vertex in bm.verts if vertex.select), None)
-        if v0:
-            v1 = v0.link_edges[0].other_vert(v0) if v0.link_edges else None
-            # special case: if v0 and v1 placed on the same place (have the same coordinates)
-            if cls._is_vectors_close(v0.co, v1.co):
-                bm.verts.remove(v0)
-                v0 = v1
-                v1 = v0.link_edges[0].other_vert(v0) if v0.link_edges else None
-            if v1:
-                v2_edge = next((edge for edge in v1.link_edges if edge != v0.link_edges[0]), None)
-                v2 = v2_edge.other_vert(v1) if v2_edge else None
-        # if we have all three starting points
+        # process all vertex selection islands - try to form list of chunks, each chunk with 3 vertices
+        selected_vertices = [vertex for vertex in bm.verts if vertex.select]
+        _l = len(selected_vertices)
+        _i = 0
+        while selected_vertices:
+            v0 = v1 = v2 = None
+            v0 = selected_vertices[0]
+            if len(v0.link_edges) == 1 and v0.link_edges[0].select == False:
+                # selected vertex at the end of the edges loop (ex. after Step Extrude)
+                v1 = v0.link_edges[0].other_vert(v0)
+                # special case: if v0 and v1 placed on the same place (have the same coordinates)
+                #   (after Step Extrude interruption)
+                if cls._is_vectors_close(v0.co, v1.co):
+                    bm.verts.remove(v0)
+                    selected_vertices.remove(v0)
+                    v0 = v1
+                    v1 = v0.link_edges[0].other_vert(v0) if v0.link_edges else None
+                if v1:
+                    v2_edge = next((edge for edge in v1.link_edges if edge != v0.link_edges[0]), None)
+                    v2 = v2_edge.other_vert(v1) if v2_edge else None
+            elif len(v0.link_edges) == 2 and v0.link_edges[0].select and v0.link_edges[1].select:
+                # vertex selected between two selected edges
+                v1 = v0
+                v0 = v1.link_edges[0].other_vert(v1)
+                v2 = v1.link_edges[1].other_vert(v1)
+            elif len(v0.link_edges) == 2 and (v0.link_edges[0].select or v0.link_edges[1].select):
+                # corner vertex on two selected edges (left or right)
+                selected_edge = next((_edge for _edge in v0.link_edges if _edge.select), None)
+                v1 = selected_edge.other_vert(v0)
+                selected_edge = next((_edge for _edge in v1.link_edges if _edge.select and _edge != selected_edge), None)
+                if selected_edge:
+                    v2 = selected_edge.other_vert(v1)
+            # if all three vertices found - create 3-point arc by this 3 vertices
+            if v0 and v1 and v2:
+                cls._arc_by_3_vertices(
+                    bm=bm,
+                    v0=v0,
+                    v1=v1,
+                    v2=v2,
+                    world_matrix=obj_world_matrix,
+                    points=points,
+                    edge_length=edge_length,
+                    arc_mode=arc_mode,
+                    invert_direction=invert_direction
+                )
+            # remove from selected vertices list
+            for v in (_v for _v in (v0, v1, v2) if _v in selected_vertices):
+                selected_vertices.remove(v)
+            # alarm break
+            _i += 1
+            if _i > _l:
+                print('processing selected vertices overflow err exit')
+                break
+        # save changed data to mesh
+        bm.to_mesh(obj.data)
+        bm.free()
+        # return mode back
+        bpy.ops.object.mode_set(mode=mode)
+
+    @classmethod
+    def _arc_by_3_vertices(cls, bm, v0, v1, v2, world_matrix, points=5, edge_length=1.25, arc_mode='POINTS',
+                           invert_direction=False):
+        # create arc on three vertices v0 - v1 - v2
         if v0 and v1 and v2:
+            world_matrix_i = world_matrix.copy()
+            world_matrix_i.invert()
             # points coordinates in global space
-            v0gco = obj_world_matrix * v0.co
-            v1gco = obj_world_matrix * v1.co
-            v2gco = obj_world_matrix * v2.co
+            v0gco = world_matrix * v0.co
+            v1gco = world_matrix * v1.co
+            v2gco = world_matrix * v2.co
             # get circle data
             circle_center, circle_radius = cls._circle_by_3_points(
                 v0=v0gco,
@@ -83,39 +131,26 @@ class Arc3:
             # We need to set in what direction new vertices will be created. Matrices in common rotates by shortest
             #   path, but we may need or not this. We need to rotate in a direction in which middle vertex (v1) is
             #   placed. So - try to get a sign of rotation.
-            cc_v0g = (v0gco - circle_center).normalized()
-            cc_v1g = (v1gco - circle_center).normalized()
-            angle_sign = cc_v0g.dot(cc_v1g)
-            # If cc_v0 and cc_v1 vectors are close to collinear, angle_sign may be very inaccurate. To fix - use
-            #   the input parameter invert_direction
-            # change rotating direction by sign
-            if angle_sign < 0.0:
-                invert_direction = not invert_direction
-            # Another way to solve proper rotating direction - count for both directions, then try to compare length
-            #   of vector from v1 to center arc point and get the direction with less length
-            single_vert_co = cls._arc_vertices_co(
+            invert_direction_auto = False
+            invert_direction_auto = cls._invert_rotation_v21(
                 v0=v0gco,
+                v1=v1gco,
                 v2=v2gco,
                 axis=axis,
-                circle_center=circle_center,
-                points=1,
-                obj_world_matrix_i=obj_world_matrix_i,
-                invert_direction=invert_direction
+                circle_center=circle_center
             )
-            single_vert_co_inv_direction = cls._arc_vertices_co(
-                v0=v0gco,
-                v2=v2gco,
-                axis=axis,
-                circle_center=circle_center,
-                points=1,
-                obj_world_matrix_i=obj_world_matrix_i,
-                invert_direction=not invert_direction
-            )
-            # compare lengths
-            l1 = (v1gco - single_vert_co[0]).length
-            l2 = (v1gco - single_vert_co_inv_direction[0]).length
-            invert_direction = invert_direction if l1 < l2 else (not invert_direction)
+            # if we want to manually invert direction
+            if invert_direction:
+                invert_direction_auto = not invert_direction_auto
             # now we can create vertices on all point with more properly rotating direction
+            # calculate points amount if the EDGE LENGTH mode is used
+            if arc_mode == 'EDGE_LENGTH':
+                v0_cc_v2_angle = (circle_center - v0gco).angle(circle_center - v2gco)
+                if invert_direction_auto:
+                    v0_cc_v2_angle = 2*pi - v0_cc_v2_angle
+                chord_length = v0_cc_v2_angle * circle_radius
+                # points = floor(chord_length / edge_length) - 1
+                points = round(chord_length / edge_length) - 1
             # create new vertices - count coordinates for all new vertices on the arc
             new_vertices_co = cls._arc_vertices_co(
                 v0=v0gco,
@@ -123,17 +158,17 @@ class Arc3:
                 axis=axis,
                 circle_center=circle_center,
                 points=points,
-                obj_world_matrix_i=obj_world_matrix_i,
-                invert_direction=invert_direction
+                invert_direction=invert_direction_auto
             )
             # create new vertices by given list of coordinates
             new_vertices = []
             for vert in new_vertices_co:
+                vert = world_matrix_i * vert    # get local coordinates from global
                 new_vert = bm.verts.new(vert)
                 new_vertices.append(new_vert)
             # create edges by new vertices
             # add v0 and v2 as first - last vertices to the new vertices list
-            if invert_direction:
+            if invert_direction_auto:
                 new_vertices.insert(0, v2)
                 new_vertices.append(v0)
             else:
@@ -142,16 +177,15 @@ class Arc3:
             chunks = cls._chunks(new_vertices, n=2, offset=1)
             for chunk in (chunk for chunk in chunks if len(chunk) == 2):
                 bm.edges.new(chunk)
-
             # remove v1 (clearing old geometry)
             bm.verts.remove(v1)
 
             # --- debug circle ---
             # bpy.context.scene.cursor_location = circle_center
-            # get normal to plane formed by all this 3 points
+            # # get normal to plane formed by all this 3 points
             # normal = (v1gco - v0gco).cross(v1gco - v2gco)
             # normal.normalize()
-            # transform matrix from normal (0, 0, 1) to normal of the 3 points plane
+            # # transform matrix from normal (0, 0, 1) to normal of the 3 points plane
             # bpy.ops.mesh.primitive_circle_add(radius=circle_radius, location=circle_center)
             # m = cls._transform_matrix_from_normal_to_normal(
             #     src_normal=Vector((0.0, 0.0, 1.0)),
@@ -159,11 +193,89 @@ class Arc3:
             # )
             # bpy.context.object.matrix_world *= m
 
-        # save changed data to mesh
-        bm.to_mesh(obj.data)
-        bm.free()
-        # return mode back
-        bpy.ops.object.mode_set(mode=mode)
+    @staticmethod
+    def _invert_rotation_v3(v0: Vector, v1: Vector, v2: Vector):
+        # check if we need invert rotation direction
+        #   EXPERIMENTAL, doesn't work right
+        #   try to check if v1 lies left or right according to v0-v1 vector
+        v1_v0 = (v0 - v1).normalized()
+        v1_v2 = (v2 - v1).normalized()
+        normal = v1_v0.cross(v1_v2)
+        normal_v1 = v1_v0.cross(normal)
+        dot = normal_v1.dot(v1_v0)
+        return dot < 0.0
+
+    @classmethod
+    def _invert_rotation_v21(cls,  v0, v1, v2, axis, circle_center, points=25):
+        # check if we need invert rotation direction
+        #   More heavy version of Paul variant
+        #   counting coordinates for 25 points in two directions, finding the closest point to v1
+        #   in which way the closest point is found - use this variant
+        single_vert_co = cls._arc_vertices_co(
+            v0=v0,
+            v2=v2,
+            axis=axis,
+            circle_center=circle_center,
+            points=points,
+            invert_direction=False
+        )
+        single_vert_co_inv_direction = cls._arc_vertices_co(
+            v0=v0,
+            v2=v2,
+            axis=axis,
+            circle_center=circle_center,
+            points=points,
+            invert_direction=True
+        )
+        # find the closes point for v1 in both lists
+        v1_point_min_dist = min(map(lambda _v: (_v - v1).length, single_vert_co))
+        v1_point_min_dist_inv = min(map(lambda _v: (_v - v1).length, single_vert_co_inv_direction))
+        # if min dist for no inversion is less min dist for inverted variant - return no inversion
+        #   False if v1_point_min_dist < v1_point_min_dist_inv else True
+        return v1_point_min_dist > v1_point_min_dist_inv
+
+    @classmethod
+    def _invert_rotation_v2(cls,  v0, v1, v2, axis, circle_center):
+        # check if we need invert rotation direction
+        #   Paul variant
+        #   Best variant but doesn't work in all cases
+        #   built two arcs by 1 point, one arc with default rotation direction and another with opposite
+        #   try to compare length of two vectors in these variants: v1 - center of created arc
+        #   which variant length is shorter - this direction we will use
+        single_vert_co = cls._arc_vertices_co(
+            v0=v0,
+            v2=v2,
+            axis=axis,
+            circle_center=circle_center,
+            points=1,
+            invert_direction=True
+        )
+        single_vert_co_inv_direction = cls._arc_vertices_co(
+            v0=v0,
+            v2=v2,
+            axis=axis,
+            circle_center=circle_center,
+            points=1,
+            invert_direction=False
+        )
+        # compare lengths
+        l1 = (v1 - single_vert_co[0]).length
+        l2 = (v1 - single_vert_co_inv_direction[0]).length
+        return l1 < l2
+
+    @staticmethod
+    def _invert_rotation_v1(v0: Vector, v1: Vector, circle_center: Vector):
+        # check if we need invert rotation direction
+        #   EXPERIMENTAL, doesn't work right in all cases
+        #   check angle between two vectors: v0-circle_center and v1-circle_center
+        #   if angle is obtuse - invert direction
+        #   If cc_v0 and cc_v1 vectors are close to collinear, angle_sign may be very inaccurate.
+        #       if isclose(angle_sign, 0, abs_tol=0.001):   # collinear
+        cc_v0g = (v0 - circle_center).normalized()
+        cc_v1g = (v1 - circle_center).normalized()
+        angle_sign = cc_v0g.dot(cc_v1g)
+        # change rotating direction by sign
+        return True if angle_sign < 0.0 else False
 
     @staticmethod
     def _is_vectors_close(v0: Vector, v1: Vector, tolerance=0.001):
@@ -174,8 +286,9 @@ class Arc3:
             else False
 
     @classmethod
-    def _arc_vertices_co(cls, v0, v2, axis, circle_center, points, obj_world_matrix_i, invert_direction):
-        # get coordinates of new creating vertices on the arc
+    def _arc_vertices_co(cls, v0, v2, axis, circle_center, points, invert_direction):
+        # get coordinates of new creating vertices on the arc in GLOBAL space
+        # return [(x, y, z), (x, y, z), ...]
         new_vertices_co = []
         for i in range(points):
             # count rotating factor for current creating vertex
@@ -198,9 +311,8 @@ class Arc3:
             cc_v0_g = v0 - circle_center
             cc_v0_g = mat_rot * cc_v0_g
             cc_new_vert_g = circle_center + cc_v0_g
-            new_vert_co = obj_world_matrix_i * cc_new_vert_g
             # save it in list
-            new_vertices_co.append(new_vert_co)
+            new_vertices_co.append(cc_new_vert_g)
         return new_vertices_co
 
     @staticmethod
@@ -282,16 +394,24 @@ class Arc3:
             icon='PARTICLE_POINT'
         )
         op.points = context.scene.arc3_prop_points
-        # op.invert_direction = context.scene.arc3_prop_invert_direction
+        op.edge_length = context.scene.arc3_prop_edge_length
+        op.mode = context.scene.arc3_prop_mode
         op.invert_direction = False
+        if context.scene.arc3_prop_mode == 'EDGE_LENGTH':
+            layout.prop(
+                data=context.scene,
+                property='arc3_prop_edge_length'
+            )
+        else:
+            layout.prop(
+                data=context.scene,
+                property='arc3_prop_points'
+            )
         layout.prop(
             data=context.scene,
-            property='arc3_prop_points'
+            property='arc3_prop_mode',
+            expand=True
         )
-        # layout.prop(
-        #     data=context.scene,
-        #     property='arc3_prop_invert_direction'
-        # )
 
 
 # OPERATORS
@@ -305,6 +425,19 @@ class Arc3_OT_arc3(Operator):
         name='Points Amount',
         default=5
     )
+    edge_length = FloatProperty(
+        name='Edge Length',
+        default=1.25,
+        min=0.0001
+    )
+    mode = EnumProperty(
+        name='Mode',
+        items=[
+            ('POINTS', 'POINTS', 'POINTS AMOUNT', '', 0),
+            ('EDGE_LENGTH', 'LENGTH', 'EDGE LENGTH', '', 1)
+        ],
+        default='POINTS'
+    )
     invert_direction = BoolProperty(
         name='Invert Direction',
         default=False
@@ -315,6 +448,8 @@ class Arc3_OT_arc3(Operator):
             context=context,
             obj=context.active_object,
             points=self.points,
+            edge_length=self.edge_length,
+            arc_mode=self.mode,
             invert_direction=self.invert_direction
         )
         return {'FINISHED'}
@@ -338,9 +473,23 @@ class Arc3_PT_panel(Panel):
 # REGISTER
 
 def register(ui=True):
+    Scene.arc3_prop_mode = EnumProperty(
+        name='Mode',
+        items=[
+            ('POINTS', 'POINTS', 'POINTS AMOUNT', '', 0),
+            ('EDGE_LENGTH', 'LENGTH', 'EDGE LENGTH', '', 1)
+        ],
+        default='POINTS'
+    )
     Scene.arc3_prop_points = IntProperty(
         name='Points Amount',
-        default=5
+        default=5,
+        min=0
+    )
+    Scene.arc3_prop_edge_length = FloatProperty(
+        name='Edge Length',
+        default=1.25,
+        min=0.0001
     )
     # Scene.arc3_prop_invert_direction = BoolProperty(
     #     name='Invert Direction',
@@ -356,7 +505,9 @@ def unregister(ui=True):
         unregister_class(Arc3_PT_panel)
     unregister_class(Arc3_OT_arc3)
     # del Scene.arc3_prop_invert_direction
+    del Scene.arc3_prop_edge_length
     del Scene.arc3_prop_points
+    del Scene.arc3_prop_mode
 
 
 if __name__ == "__main__":

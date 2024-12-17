@@ -10,7 +10,7 @@ One corner point on the edge must be selected to detect what vertices will be us
 
 Current version
 -
-1.0.0.
+1.1.0.
 
 Blender version
 -
@@ -18,5 +18,11 @@ Blender version
 
 Version history
 -
+
+1.1.0
+- Added "Edge Length" parameter. Instead of "Points" it allows to set dest edges length with which arc will be created.
+- Added butch mode for processing several selected edges.
+- Improved building arc direction algorithm
+
 1.0.0
 - First release
