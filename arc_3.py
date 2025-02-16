@@ -3,6 +3,7 @@
 #
 # GitHub
 #    https://github.com/Korchy/1d_arc_3
+import math
 
 import bmesh
 import bpy
@@ -30,7 +31,8 @@ bl_info = {
 class Arc3:
 
     @classmethod
-    def arc3(cls, context, obj, points=5, edge_length=1.25, arc_mode='POINTS', invert_direction=False):
+    def arc3(cls, context, obj, points=5, edge_length=1.25, base_points=32, arc_mode='POINTS',
+             invert_direction=False):
         # create arc from 2 edges (3 vertices)
         obj = obj if obj else context.active_object
         # current mode
@@ -85,6 +87,7 @@ class Arc3:
                     world_matrix=obj_world_matrix,
                     points=points,
                     edge_length=edge_length,
+                    base_points=base_points,
                     arc_mode=arc_mode,
                     invert_direction=invert_direction
                 )
@@ -103,8 +106,114 @@ class Arc3:
         bpy.ops.object.mode_set(mode=mode)
 
     @classmethod
-    def _arc_by_3_vertices(cls, bm, v0, v1, v2, world_matrix, points=5, edge_length=1.25, arc_mode='POINTS',
-                           invert_direction=False):
+    def butch_clean(cls, context, obj, points=5, edge_length=1.25, base_points=32, arc_mode='BASE_32'):
+        # butch processing of raw (butch) arcs
+        obj = obj if obj else context.active_object
+        # current mode
+        mode = obj.mode
+        if obj.mode == 'EDIT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        # switch to vertex selection mode
+        obj_world_matrix = obj.matrix_world.copy()
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
+        bm.edges.ensure_lookup_table()
+        # select edges mode
+        bm.select_mode = {'EDGE'}
+        bm.select_flush_mode()
+        # process all vertex selection islands - try to form list of butch arcs to process them
+        # try to get bounding vertices - which have at least one deselected linked edge
+        bounding_vertices = [vertex for vertex in bm.verts
+                             if vertex.select and len([_edge for _edge in vertex.link_edges if not _edge.select]) > 0]
+        # print([v.index for v in bounding_vertices])
+        # from each bounding vertex try to walk to another bounding vertex to form a pair of bounding vertices for arc
+        # pairs => list of pair bounding vertices and all other vertices belongs to this pair
+        pairs = []  # [(bounding_vert_1, bounding_vert_2, [vertex, vertex, ...]), ...]
+        checked_vertices = set()
+        selected_vertices = [_vert for _vert in bm.verts if _vert.select]
+        for vertex in bounding_vertices:
+            if vertex not in checked_vertices:
+                path = cls._possible_path(
+                    start_point=vertex,
+                    possible_points=selected_vertices,
+                    possible_endpoints=bounding_vertices
+                )
+                if path:
+                    # pair found
+                    pairs.append((path[0], path[-1], []))
+                    checked_vertices.update((path[0], path[-1]))
+                else:
+                    # get bounded vertex but can't find a pair to it
+                    print('WARNING: can\'t find a pair for vertex:', vertex.index)
+        # print(pairs)
+        # for each non-bounding vertex check for what pair of bounding vertices it belongs
+        selected_non_bounding_vertices = [_vert for _vert in bm.verts
+                                          if _vert.select and _vert not in bounding_vertices]
+        for vertex in selected_non_bounding_vertices:
+            path = cls._possible_path(
+                start_point=vertex,
+                possible_points=selected_vertices,
+                possible_endpoints=bounding_vertices
+            )
+            if path:
+                # found path to one of bounding points - add to pair with this bounding point
+                pair = next((_pair for _pair in pairs if path[-1] in {_pair[0], _pair[1]}), None)
+                if pair:
+                    pair[2].append(vertex)
+            else:
+                # can't find a path to on of bounding vertices
+                print('WARNING: can\'t find a bounding vertex for vertex:', vertex.index)
+        # for _p in pairs:
+        #     print(_p)
+
+        # remove pairs which has no belonging vertices between its bounding vertices
+        broken_pairs = [_pair for _pair in pairs if not _pair[2]]
+        if broken_pairs:
+            print('WARNING: groups consists with only 2 vertices', broken_pairs)
+        pairs = [_pair for _pair in pairs if _pair[2]]
+        # for each pair process its belonging vertices to find the third point for building the circle by 3 points
+        #   we need to save list of belonging vertices to remove them after creating arc
+        #   the p1 will be removed automatically when creating arc, so the list shouldn't include it
+        circles_points = []     # [(p0, p1, p2, [vertex, vertex, ...]), ...]
+        for pair in pairs:
+            p0 = pair[0]
+            p2 = pair[1]
+            # from vertices belonging to this pair find one which is mostly equidistant from bounding vertices
+            #   length of the vector from first bounding point to this vertex should be close to the length of the
+            #   vector from the second bounding point to this vertex
+            p1 = min(((_vertex, abs((p0.co - _vertex.co).length - (p2.co - _vertex.co).length)) for _vertex in pair[2]),
+                     key=lambda _item: _item[1])
+            circles_points.append((p0, p1[0] if p1 else None, p2, set(pair[2])-{p1[0] if p1 else None}))
+        # for _c in circles_points:
+        #     print(_c)
+        # now we have several blocks, each with 3 points, for creating circles
+        for circle_data in circles_points:
+            # create arc
+            # print(circle_data)
+            cls._arc_by_3_vertices(
+                bm=bm,
+                v0=circle_data[0],
+                v1=circle_data[1],
+                v2=circle_data[2],
+                world_matrix=obj_world_matrix,
+                points=points,
+                edge_length=edge_length,
+                base_points=base_points,
+                arc_mode=arc_mode
+            )
+            # remove source vertices
+            for vertex in circle_data[3]:
+                bm.verts.remove(vertex)
+        # save changed data to mesh
+        bm.to_mesh(obj.data)
+        bm.free()
+        # return mode back
+        bpy.ops.object.mode_set(mode=mode)
+
+    @classmethod
+    def _arc_by_3_vertices(cls, bm, v0, v1, v2, world_matrix, points=5, edge_length=1.25, base_points=32,
+                           arc_mode='POINTS', invert_direction=False):
         # create arc on three vertices v0 - v1 - v2
         if v0 and v1 and v2:
             world_matrix_i = world_matrix.copy()
@@ -143,14 +252,26 @@ class Arc3:
             if invert_direction:
                 invert_direction_auto = not invert_direction_auto
             # now we can create vertices on all point with more properly rotating direction
-            # calculate points amount if the EDGE LENGTH mode is used
+            # recalculate points amount if not "POINTS" mode is used
             if arc_mode == 'EDGE_LENGTH':
+                # EDGES_LENGTH mode - recalculate points amount by edges_length input parameter
                 v0_cc_v2_angle = (circle_center - v0gco).angle(circle_center - v2gco)
                 if invert_direction_auto:
                     v0_cc_v2_angle = 2*pi - v0_cc_v2_angle
                 chord_length = v0_cc_v2_angle * circle_radius
                 # points = floor(chord_length / edge_length) - 1
                 points = round(chord_length / edge_length) - 1
+            elif arc_mode == 'BASE_32':
+                # BASE_32 mode - recalculate points amount by base_points input parameter
+                # get total points by base points: 32 * circle radius
+                total_points_on_full_circle = int(base_points * circle_radius)
+                # get sector angle
+                v0_cc_v2_angle = (circle_center - v0gco).angle(circle_center - v2gco)   # 0...2*pi
+                if invert_direction_auto:
+                    v0_cc_v2_angle = 2 * pi - v0_cc_v2_angle
+                v0_cc_v2_ratio = v0_cc_v2_angle / (2 * pi)    # from 0...2*pi radians to 0...1 ratio
+                # count points number for this sector
+                points = int(total_points_on_full_circle * v0_cc_v2_ratio)
             # create new vertices - count coordinates for all new vertices on the arc
             new_vertices_co = cls._arc_vertices_co(
                 v0=v0gco,
@@ -386,10 +507,43 @@ class Arc3:
         return transform_matrix
 
     @staticmethod
+    def _possible_path(start_point, possible_points, possible_endpoints):
+        # try to find a path starting from "start_point" which can follow only through "possible_points" (vertices and
+        #   edges must be selected) and can end on any point from "possible_endpoints"
+        path_found = None
+        visited_vertices = {start_point, }
+        possible_paths = [[start_point, ], ]
+        _i = 0
+        _l = len(possible_points)
+        while not path_found and possible_paths:
+            # explore first possible path
+            path = possible_paths.pop(0)
+            # get possible next vertices
+            vertex = path[-1]
+            next_vertices = [_edge.other_vert(vertex) for _edge in vertex.link_edges
+                             if _edge.select    # edges must be selected to prevent case when two selected vertices could be connected with not selected edge
+                             and _edge.other_vert(vertex) in possible_points
+                             and _edge.other_vert(vertex) not in visited_vertices]
+            # create new possible paths
+            for vertex in next_vertices:
+                possible_paths.insert(0, path[:] + [vertex,])   # new paths are prepending to the list
+            # update visited vertices list
+            visited_vertices.update(next_vertices)
+            # check if successfully finished with one of possible_endpoints
+            path_found = next((_path for _path in possible_paths if _path[-1] in possible_endpoints), None)
+            # overflow control
+            _i += 1
+            if _i > _l:
+                print('ERR: overflow when finding possible paths')
+                break
+        return path_found
+
+    @staticmethod
     def ui(layout, context):
         # ui panel
         # 3 Points Arc
-        op = layout.operator(
+        box = layout.box()
+        op = box.operator(
             operator='arc3.arc3',
             icon='PARTICLE_POINT'
         )
@@ -397,17 +551,31 @@ class Arc3:
         op.edge_length = context.scene.arc3_prop_edge_length
         op.mode = context.scene.arc3_prop_mode
         op.invert_direction = False
+        # Butch Clean
+        op = box.operator(
+            operator='arc3.butch_clean',
+            icon='FORCE_TURBULENCE'
+        )
+        op.mode = context.scene.arc3_prop_mode
+        op.base_points = context.scene.arc3_prop_base_points
+        # PROPS
         if context.scene.arc3_prop_mode == 'EDGE_LENGTH':
-            layout.prop(
+            box.prop(
                 data=context.scene,
                 property='arc3_prop_edge_length'
             )
+        elif context.scene.arc3_prop_mode == 'BASE_32':
+            box.prop(
+                data=context.scene,
+                property='arc3_prop_base_points'
+            )
         else:
-            layout.prop(
+            box.prop(
                 data=context.scene,
                 property='arc3_prop_points'
             )
-        layout.prop(
+        row = box.row()
+        row.prop(
             data=context.scene,
             property='arc3_prop_mode',
             expand=True
@@ -430,11 +598,17 @@ class Arc3_OT_arc3(Operator):
         default=1.25,
         min=0.0001
     )
+    base_points = IntProperty(
+        name='Points Base',
+        default=32,
+        min=1
+    )
     mode = EnumProperty(
         name='Mode',
         items=[
             ('POINTS', 'POINTS', 'POINTS AMOUNT', '', 0),
-            ('EDGE_LENGTH', 'LENGTH', 'EDGE LENGTH', '', 1)
+            ('EDGE_LENGTH', 'LENGTH', 'EDGE LENGTH', '', 1),
+            ('BASE_32', 'BASE x32', 'BASE_32', '', 2)
         ],
         default='POINTS'
     )
@@ -449,8 +623,49 @@ class Arc3_OT_arc3(Operator):
             obj=context.active_object,
             points=self.points,
             edge_length=self.edge_length,
+            base_points=self.base_points,
             arc_mode=self.mode,
             invert_direction=self.invert_direction
+        )
+        return {'FINISHED'}
+
+class Arc3_OT_butch_clean(Operator):
+    bl_idname = 'arc3.butch_clean'
+    bl_label = 'Butch Clean'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    points = IntProperty(
+        name='Points Amount',
+        default=5
+    )
+    edge_length = FloatProperty(
+        name='Edge Length',
+        default=1.25,
+        min=0.0001
+    )
+    base_points = IntProperty(
+        name='Points Base',
+        default=32,
+        min=1
+    )
+    mode = EnumProperty(
+        name='Mode',
+        items=[
+            ('POINTS', 'POINTS', 'POINTS AMOUNT', '', 0),
+            ('EDGE_LENGTH', 'LENGTH', 'EDGE LENGTH', '', 1),
+            ('BASE_32', 'BASE x32', 'BASE_32', '', 2)
+        ],
+        default='POINTS'
+    )
+
+    def execute(self, context):
+        Arc3.butch_clean(
+            context=context,
+            obj=context.active_object,
+            points=self.points,
+            edge_length=self.edge_length,
+            base_points=self.base_points,
+            arc_mode=self.mode
         )
         return {'FINISHED'}
 
@@ -473,11 +688,13 @@ class Arc3_PT_panel(Panel):
 # REGISTER
 
 def register(ui=True):
+    # 3-arc
     Scene.arc3_prop_mode = EnumProperty(
         name='Mode',
         items=[
             ('POINTS', 'POINTS', 'POINTS AMOUNT', '', 0),
-            ('EDGE_LENGTH', 'LENGTH', 'EDGE LENGTH', '', 1)
+            ('EDGE_LENGTH', 'LENGTH', 'EDGE LENGTH', '', 1),
+            ('BASE_32', 'BASE x32', 'BASE_32', '', 2)
         ],
         default='POINTS'
     )
@@ -496,6 +713,13 @@ def register(ui=True):
     #     default=False
     # )
     register_class(Arc3_OT_arc3)
+    # butch clean
+    Scene.arc3_prop_base_points = IntProperty(
+        name='Points Base',
+        default=32,
+        min=1
+    )
+    register_class(Arc3_OT_butch_clean)
     if ui:
         register_class(Arc3_PT_panel)
 
@@ -503,6 +727,10 @@ def register(ui=True):
 def unregister(ui=True):
     if ui:
         unregister_class(Arc3_PT_panel)
+    # butch clean
+    unregister_class(Arc3_OT_butch_clean)
+    del Scene.arc3_prop_base_points
+    # 3-arc
     unregister_class(Arc3_OT_arc3)
     # del Scene.arc3_prop_invert_direction
     del Scene.arc3_prop_edge_length
