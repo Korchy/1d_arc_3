@@ -11,7 +11,7 @@ from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty
 from bpy.types import Operator, Panel, Scene
 from bpy.utils import register_class, unregister_class
 from mathutils import Matrix, Vector
-from math import isclose, pi
+from math import isclose, log, pi
 
 bl_info = {
     "name": "3 Points Arc",
@@ -31,8 +31,8 @@ bl_info = {
 class Arc3:
 
     @classmethod
-    def arc3(cls, context, obj, points=5, edge_length=1.25, base_points=32, arc_mode='POINTS',
-             invert_direction=False):
+    def arc3(cls, context, obj, points=5, edge_length=1.25, base_points=32, base_points_rate=2.0,
+             arc_mode='POINTS', invert_direction=False):
         # create arc from 2 edges (3 vertices)
         obj = obj if obj else context.active_object
         # current mode
@@ -88,6 +88,7 @@ class Arc3:
                     points=points,
                     edge_length=edge_length,
                     base_points=base_points,
+                    base_points_rate=base_points_rate,
                     arc_mode=arc_mode,
                     invert_direction=invert_direction
                 )
@@ -106,7 +107,8 @@ class Arc3:
         bpy.ops.object.mode_set(mode=mode)
 
     @classmethod
-    def butch_clean(cls, context, obj, points=5, edge_length=1.25, base_points=32, arc_mode='BASE_32'):
+    def butch_clean(cls, context, obj, points=5, edge_length=1.25, base_points=32, base_points_rate=2.0,
+                    arc_mode='BASE_32'):
         # butch processing of raw (butch) arcs
         obj = obj if obj else context.active_object
         # current mode
@@ -125,7 +127,9 @@ class Arc3:
         # process all vertex selection islands - try to form list of butch arcs to process them
         # try to get bounding vertices - which have at least one deselected linked edge
         bounding_vertices = [vertex for vertex in bm.verts
-                             if vertex.select and len([_edge for _edge in vertex.link_edges if not _edge.select]) > 0]
+                             if vertex.select and (len([_edge for _edge in vertex.link_edges if not _edge.select]) > 0
+                                                   or len(vertex.link_edges) == 1)
+                             ]
         # print([v.index for v in bounding_vertices])
         # from each bounding vertex try to walk to another bounding vertex to form a pair of bounding vertices for arc
         # pairs => list of pair bounding vertices and all other vertices belongs to this pair
@@ -200,6 +204,7 @@ class Arc3:
                 points=points,
                 edge_length=edge_length,
                 base_points=base_points,
+                base_points_rate=base_points_rate,
                 arc_mode=arc_mode
             )
             # remove source vertices
@@ -213,7 +218,7 @@ class Arc3:
 
     @classmethod
     def _arc_by_3_vertices(cls, bm, v0, v1, v2, world_matrix, points=5, edge_length=1.25, base_points=32,
-                           arc_mode='POINTS', invert_direction=False):
+                           base_points_rate=2.0, arc_mode='POINTS', invert_direction=False):
         # create arc on three vertices v0 - v1 - v2
         if v0 and v1 and v2:
             world_matrix_i = world_matrix.copy()
@@ -264,7 +269,18 @@ class Arc3:
             elif arc_mode == 'BASE_32':
                 # BASE_32 mode - recalculate points amount by base_points input parameter
                 # get total points by base points: 32 * circle radius
-                total_points_on_full_circle = int(base_points * circle_radius)
+                total_points_on_full_circle = int(base_points * circle_radius / base_points_rate)   # Paul + division on base_points_rate
+                # get sector angle
+                v0_cc_v2_angle = (circle_center - v0gco).angle(circle_center - v2gco)   # 0...2*pi
+                if invert_direction_auto:
+                    v0_cc_v2_angle = 2 * pi - v0_cc_v2_angle
+                v0_cc_v2_ratio = v0_cc_v2_angle / (2 * pi)    # from 0...2*pi radians to 0...1 ratio
+                # count points number for this sector
+                points = int(total_points_on_full_circle * v0_cc_v2_ratio)
+            elif arc_mode == 'BASE_32_LOG':
+                # BASE_32_LOG mode - recalculate points amount by base_points and base_points_rate input parameter
+                # get total points by base points: 32 * circle radius
+                total_points_on_full_circle = int(base_points * log(circle_radius + 1, base_points_rate))
                 # get sector angle
                 v0_cc_v2_angle = (circle_center - v0gco).angle(circle_center - v2gco)   # 0...2*pi
                 if invert_direction_auto:
@@ -549,15 +565,19 @@ class Arc3:
         )
         op.points = context.scene.arc3_prop_points
         op.edge_length = context.scene.arc3_prop_edge_length
+        op.base_points = context.scene.arc3_prop_base_points
+        op.base_points_rate = context.scene.arc3_prop_base_points_rate
         op.mode = context.scene.arc3_prop_mode
         op.invert_direction = False
         # Butch Clean
         op = box.operator(
             operator='arc3.butch_clean',
-            icon='FORCE_TURBULENCE'
+            icon='FORCE_TURBULENCE',
+            text='Arc Batch Clean'
         )
-        op.mode = context.scene.arc3_prop_mode
         op.base_points = context.scene.arc3_prop_base_points
+        op.base_points_rate = context.scene.arc3_prop_base_points_rate
+        op.mode = context.scene.arc3_prop_mode
         # PROPS
         if context.scene.arc3_prop_mode == 'EDGE_LENGTH':
             box.prop(
@@ -568,6 +588,20 @@ class Arc3:
             box.prop(
                 data=context.scene,
                 property='arc3_prop_base_points'
+            )
+            box.prop(
+                data=context.scene,
+                property='arc3_prop_base_points_rate',
+                text='K'
+            )
+        elif context.scene.arc3_prop_mode == 'BASE_32_LOG':
+            box.prop(
+                data=context.scene,
+                property='arc3_prop_base_points'
+            )
+            box.prop(
+                data=context.scene,
+                property='arc3_prop_base_points_rate'
             )
         else:
             box.prop(
@@ -603,12 +637,18 @@ class Arc3_OT_arc3(Operator):
         default=32,
         min=1
     )
+    base_points_rate = FloatProperty(
+        name='K/LOG',
+        default=2.0,
+        min=0.0001
+    )
     mode = EnumProperty(
         name='Mode',
         items=[
             ('POINTS', 'POINTS', 'POINTS AMOUNT', '', 0),
             ('EDGE_LENGTH', 'LENGTH', 'EDGE LENGTH', '', 1),
-            ('BASE_32', 'BASE x32', 'BASE_32', '', 2)
+            ('BASE_32', 'LIN', 'LOG', '', 2),
+            ('BASE_32_LOG', 'LOG', 'LOG', '', 3)
         ],
         default='POINTS'
     )
@@ -624,6 +664,7 @@ class Arc3_OT_arc3(Operator):
             points=self.points,
             edge_length=self.edge_length,
             base_points=self.base_points,
+            base_points_rate=self.base_points_rate,
             arc_mode=self.mode,
             invert_direction=self.invert_direction
         )
@@ -648,12 +689,18 @@ class Arc3_OT_butch_clean(Operator):
         default=32,
         min=1
     )
+    base_points_rate = FloatProperty(
+        name='K/LOG',
+        default=2.0,
+        min=0.0001
+    )
     mode = EnumProperty(
         name='Mode',
         items=[
             ('POINTS', 'POINTS', 'POINTS AMOUNT', '', 0),
             ('EDGE_LENGTH', 'LENGTH', 'EDGE LENGTH', '', 1),
-            ('BASE_32', 'BASE x32', 'BASE_32', '', 2)
+            ('BASE_32', 'LIN', 'LIN', '', 2),
+            ('BASE_32_LOG', 'LOG', 'LOG', '', 3)
         ],
         default='POINTS'
     )
@@ -665,6 +712,7 @@ class Arc3_OT_butch_clean(Operator):
             points=self.points,
             edge_length=self.edge_length,
             base_points=self.base_points,
+            base_points_rate=self.base_points_rate,
             arc_mode=self.mode
         )
         return {'FINISHED'}
@@ -694,7 +742,8 @@ def register(ui=True):
         items=[
             ('POINTS', 'POINTS', 'POINTS AMOUNT', '', 0),
             ('EDGE_LENGTH', 'LENGTH', 'EDGE LENGTH', '', 1),
-            ('BASE_32', 'BASE x32', 'BASE_32', '', 2)
+            ('BASE_32', 'LIN', 'LIN', '', 2),
+            ('BASE_32_LOG', 'LOG', 'LOG', '', 3)
         ],
         default='POINTS'
     )
@@ -719,6 +768,11 @@ def register(ui=True):
         default=32,
         min=1
     )
+    Scene.arc3_prop_base_points_rate = FloatProperty(
+        name='Log',
+        default=2.0,
+        min=0.0001
+    )
     register_class(Arc3_OT_butch_clean)
     if ui:
         register_class(Arc3_PT_panel)
@@ -729,6 +783,7 @@ def unregister(ui=True):
         unregister_class(Arc3_PT_panel)
     # butch clean
     unregister_class(Arc3_OT_butch_clean)
+    del Scene.arc3_prop_base_points_rate
     del Scene.arc3_prop_base_points
     # 3-arc
     unregister_class(Arc3_OT_arc3)
