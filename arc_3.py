@@ -672,7 +672,7 @@ class Arc3_OT_arc3(Operator):
 
 class Arc3_OT_butch_clean(Operator):
     bl_idname = 'arc3.butch_clean'
-    bl_label = 'Butch Clean'
+    bl_label = 'Arc Batch Clean'
     bl_options = {'REGISTER', 'UNDO'}
 
     points = IntProperty(
