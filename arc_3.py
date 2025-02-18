@@ -575,6 +575,8 @@ class Arc3:
             icon='FORCE_TURBULENCE',
             text='Arc Batch Clean'
         )
+        op.points = context.scene.arc3_prop_points
+        op.edge_length = context.scene.arc3_prop_edge_length
         op.base_points = context.scene.arc3_prop_base_points
         op.base_points_rate = context.scene.arc3_prop_base_points_rate
         op.mode = context.scene.arc3_prop_mode
