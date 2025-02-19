@@ -31,7 +31,7 @@ bl_info = {
 class Arc3:
 
     @classmethod
-    def arc3(cls, context, obj, points=5, edge_length=1.25, base_points=32, base_points_rate=2.0,
+    def arc3(cls, context, obj, points=5, edge_length=1.25, base_points=32, base_points_rate=0.7,
              arc_mode='POINTS', invert_direction=False):
         # create arc from 2 edges (3 vertices)
         obj = obj if obj else context.active_object
@@ -107,7 +107,7 @@ class Arc3:
         bpy.ops.object.mode_set(mode=mode)
 
     @classmethod
-    def butch_clean(cls, context, obj, points=5, edge_length=1.25, base_points=32, base_points_rate=2.0,
+    def butch_clean(cls, context, obj, points=5, edge_length=1.25, base_points=32, base_points_rate=0.7,
                     arc_mode='BASE_32'):
         # butch processing of raw (butch) arcs
         obj = obj if obj else context.active_object
@@ -218,7 +218,7 @@ class Arc3:
 
     @classmethod
     def _arc_by_3_vertices(cls, bm, v0, v1, v2, world_matrix, points=5, edge_length=1.25, base_points=32,
-                           base_points_rate=2.0, arc_mode='POINTS', invert_direction=False):
+                           base_points_rate=0.7, arc_mode='POINTS', invert_direction=False):
         # create arc on three vertices v0 - v1 - v2
         if v0 and v1 and v2:
             world_matrix_i = world_matrix.copy()
@@ -642,7 +642,7 @@ class Arc3_OT_arc3(Operator):
     )
     base_points_rate = FloatProperty(
         name='K/LOG',
-        default=2.0,
+        default=0.7,
         min=0.0001
     )
     mode = EnumProperty(
@@ -651,7 +651,7 @@ class Arc3_OT_arc3(Operator):
             ('POINTS', 'POINTS', 'POINTS AMOUNT', '', 0),
             ('EDGE_LENGTH', 'LENGTH', 'EDGE LENGTH', '', 1),
             ('BASE_32', 'LIN', 'LOG', '', 2),
-            ('BASE_32_LOG', 'LOG', 'LOG', '', 3)
+            ('BASE_32_LOG', 'LOG', 'log2(r^Log+1)', '', 3)
         ],
         default='POINTS'
     )
@@ -694,7 +694,7 @@ class Arc3_OT_butch_clean(Operator):
     )
     base_points_rate = FloatProperty(
         name='K/LOG',
-        default=2.0,
+        default=0.7,
         min=0.0001
     )
     mode = EnumProperty(
@@ -703,7 +703,7 @@ class Arc3_OT_butch_clean(Operator):
             ('POINTS', 'POINTS', 'POINTS AMOUNT', '', 0),
             ('EDGE_LENGTH', 'LENGTH', 'EDGE LENGTH', '', 1),
             ('BASE_32', 'LIN', 'LIN', '', 2),
-            ('BASE_32_LOG', 'LOG', 'LOG', '', 3)
+            ('BASE_32_LOG', 'LOG', 'log2(r^Log+1)', '', 3)
         ],
         default='POINTS'
     )
@@ -746,7 +746,7 @@ def register(ui=True):
             ('POINTS', 'POINTS', 'POINTS AMOUNT', '', 0),
             ('EDGE_LENGTH', 'LENGTH', 'EDGE LENGTH', '', 1),
             ('BASE_32', 'LIN', 'LIN', '', 2),
-            ('BASE_32_LOG', 'LOG', 'LOG', '', 3)
+            ('BASE_32_LOG', 'LOG', 'log2(r^Log+1)', '', 3)
         ],
         default='POINTS'
     )
@@ -773,7 +773,7 @@ def register(ui=True):
     )
     Scene.arc3_prop_base_points_rate = FloatProperty(
         name='Log',
-        default=2.0,
+        default=0.7,
         min=0.0001
     )
     register_class(Arc3_OT_butch_clean)
