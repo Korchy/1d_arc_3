@@ -11,7 +11,7 @@ from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty
 from bpy.types import Operator, Panel, Scene
 from bpy.utils import register_class, unregister_class
 from mathutils import Matrix, Vector
-from math import isclose, log, pi
+from math import isclose, log, log2, pi
 
 bl_info = {
     "name": "3 Points Arc",
@@ -280,7 +280,8 @@ class Arc3:
             elif arc_mode == 'BASE_32_LOG':
                 # BASE_32_LOG mode - recalculate points amount by base_points and base_points_rate input parameter
                 # get total points by base points: 32 * circle radius
-                total_points_on_full_circle = int(base_points * log(circle_radius + 1, base_points_rate))
+                # total_points_on_full_circle = int(base_points * log(circle_radius + 1, base_points_rate))
+                total_points_on_full_circle = int(base_points * log2(circle_radius ** base_points_rate + 1))
                 # get sector angle
                 v0_cc_v2_angle = (circle_center - v0gco).angle(circle_center - v2gco)   # 0...2*pi
                 if invert_direction_auto:
